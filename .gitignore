@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+.vscode/
+
+# Data artifacts (don't commit large data)
+data/**/*.parquet
+data/**/*.csv
+data/**/*.pkl
+data/**/*.feather
+data/**/raw/**
+data/**/processed/**
+data/**/cache/**
+data/token
+
+# Reports artifacts
+reports/**/*.pdf
+reports/**/*.parquet
+reports/**/*.csv
+reports/**/*.png
+reports/**/*.json
+
+*_paths_*
+
