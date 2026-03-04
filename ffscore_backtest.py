@@ -415,8 +415,15 @@ def run_backtest(panel: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.DataFrame
 
     _, daily = load_monthly_market_data(cfg.data_dir, cfg.start, cfg.end)
     px_col = "close_qfq" if "close_qfq" in daily.columns else "close"
+    op_col = "open_qfq" if "open_qfq" in daily.columns else "open"
     daily[px_col] = pd.to_numeric(daily[px_col], errors="coerce")
-    daily["ret_d"] = daily.groupby("ts_code", sort=False)[px_col].pct_change()
+    daily[op_col] = pd.to_numeric(daily[op_col], errors="coerce")
+    # Execution convention: signal at day t close, trade at day t+1 open.
+    # Return index at date t uses next open-to-open: open[t+1] / open[t] - 1.
+    daily["ret_d"] = (
+        daily.groupby("ts_code", sort=False)[op_col]
+        .transform(lambda s: s.shift(-1) / s - 1.0)
+    )
     daily["month_end"] = _to_month_end(daily["trade_date"])
     daily["period_end"] = daily["month_end"]
 
@@ -542,7 +549,7 @@ def save_plots(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     p = argparse.ArgumentParser(description="FFScore backtest with monthly tradability filters and drift-aware costs.")
     p.add_argument("--data-dir", type=str, default="data")
-    p.add_argument("--out-dir", type=str, default="reports/ffscore_backtest")
+    p.add_argument("--out-dir", type=str, default="reports/ffscore_backtest_final")
     p.add_argument("--start", type=str, default="2013-01-01")
     p.add_argument("--end", type=str, default="2026-01-31")
     p.add_argument("--top-quantile", type=float, default=0.2, help="Select top FFScore names by this quantile monthly.")

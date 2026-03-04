@@ -28,11 +28,9 @@ data/**/cache/**
 data/token
 
 # Reports artifacts
-reports/**/*.pdf
+reports/**/*.csv
 reports/**/*.parquet
 reports/**/*.json
-
-reports/ffscore_backtest_pb20_ff5_only_qfix_novt2
 
 *_paths_*
 

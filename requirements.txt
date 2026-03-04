@@ -4,4 +4,5 @@ pyarrow==19.0.0
 tqdm==4.67.1
 scipy==1.15.1
 tushare
-matplotlib==3.10.0
+matplotlib==3.10.8
+yfinance==0.2.65

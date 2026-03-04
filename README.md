@@ -38,7 +38,7 @@ The score ranges from 0 to 5.
 - Tradability guard: names with monthly tradable days below threshold are excluded.
 - Signal timing: signal is formed after month-end close; trading happens on the next trading day.
 - Rebalance frequency default: monthly.
-- Transaction cost: one-way cost in bps applied through turnover.
+- Transaction cost: one-way cost in bps (`cost-bps = 10`) applied through turnover.
 - Daily PnL engine with weight drift and daily equity compounding.
 
 ### Risk-control extension
@@ -55,11 +55,11 @@ Main backtest outputs are in `reports/ffscore_backtest_final/`.
 
 From `performance_summary.csv`:
 
-- Annualized return: **29.62%**
-- Annualized volatility: **25.11%**
-- Sharpe: **1.16**
-- Total return: **2533.25%**
-- Max drawdown: **-46.52%**
+- Annualized return: **29.97%**
+- Annualized volatility: **26.97%**
+- Sharpe: **1.11**
+- Total return: **2624.17%**
+- Max drawdown: **-46.35%**
 
 These results suggest the FFScore + low-PB + full-score framework has strong long-run return, but still experiences deep drawdowns.
 
@@ -73,9 +73,9 @@ These results suggest the FFScore + low-PB + full-score framework has strong lon
 
 Using `reports/ffscore_backtest_final/strategy_vol_lag_correlation.csv`:
 
-- 1-month-lag correlation of realized vol: **0.668**
-- 2-month-lag correlation: **0.453**
-- 3-month-lag correlation: **0.331**
+- 1-month-lag correlation of realized vol: **0.65**
+- 2-month-lag correlation: **0.47**
+- 3-month-lag correlation: **0.31**
 
 This indicates short-horizon volatility clustering (memory), which motivates dynamic risk scaling.
 
@@ -98,8 +98,7 @@ See:
 
 Key findings:
 
-- **Drawdown can be materially reduced** versus baseline max drawdown (-46.52%).
-- Best drawdown point in tested grid: about **-22.74%** (`lookback=6`, `vol_target=0.08`), with lower annualized return (~17.37%).
-- Best Calmar point in tested grid: about **0.853** (`lookback=3`, `vol_target=0.25`), with annualized return ~28.53% and max drawdown ~-33.46%.
+- **Drawdown can be materially reduced** versus baseline max drawdown (-46.35%).
+- Best Calmar point in tested grid: about **0.841** (`lookback=6`, `vol_target=0.25`), with annualized return ~29.13% and max drawdown ~-34.64%.
 
 Overall, volatility targeting provides a controllable return-vs-drawdown trade-off, and is effective as a risk overlay for this FFScore strategy.
