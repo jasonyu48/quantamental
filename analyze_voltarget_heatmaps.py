@@ -8,7 +8,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
-from ffscore_backtest import BacktestConfig, build_monthly_panel, parse_args as parse_bt_args, performance_stats, run_backtest
+from backtest_engine import performance_stats
+from ffscore_backtest import BacktestConfig, build_monthly_panel, parse_args as parse_bt_args, run_backtest
 
 
 def _calmar_from_daily(daily_bt: pd.DataFrame) -> float:

@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from backtest_engine import performance_stats, run_weight_execution_engine
+
 
 def _read_parquet_folder(path: Path, pattern: str) -> pd.DataFrame:
     files = sorted(path.glob(pattern))
@@ -315,6 +317,86 @@ def _build_rebalance_mask(dates: pd.DatetimeIndex, freq: str) -> pd.Series:
     return out
 
 
+def build_signal_period_end_by_trade_date(cal: pd.DataFrame, period_col: str = "period_end") -> pd.Series:
+    trade_dates = pd.DatetimeIndex(cal.index)
+    period_last_trade_dates = set(
+        cal.reset_index().groupby(period_col, sort=True)["trade_date"].max().tolist()
+    )
+    out: dict[pd.Timestamp, pd.Timestamp | pd.NaT] = {}
+    latest_signal_period_end: pd.Timestamp | pd.NaT = pd.NaT
+    for i, dt in enumerate(trade_dates):
+        if i > 0:
+            prev_dt = pd.Timestamp(trade_dates[i - 1])
+            if prev_dt in period_last_trade_dates:
+                latest_signal_period_end = pd.Timestamp(cal.at[prev_dt, period_col])
+        out[pd.Timestamp(dt)] = (
+            pd.Timestamp(latest_signal_period_end) if pd.notna(latest_signal_period_end) else pd.NaT
+        )
+    return pd.Series(out).sort_index()
+
+
+def _build_ffscore_rebalance_targets(
+    score_panel: pd.DataFrame,
+    pb_panel: pd.DataFrame,
+    eligible_panel: pd.DataFrame,
+    trade_dates: pd.DatetimeIndex,
+    rebalance_mask: pd.Series,
+    signal_period_end_by_date: pd.Series,
+    symbols: pd.Index,
+    cfg: BacktestConfig,
+) -> tuple[dict[pd.Timestamp, pd.Series], dict[pd.Timestamp, dict], dict[pd.Timestamp, pd.Series]]:
+    target_by_date: dict[pd.Timestamp, pd.Series] = {}
+    meta_by_date: dict[pd.Timestamp, dict] = {}
+    elig_by_date: dict[pd.Timestamp, pd.Series] = {}
+    zero_w = pd.Series(0.0, index=symbols, dtype="float64")
+
+    for dt in trade_dates:
+        dt = pd.Timestamp(dt)
+        if not bool(rebalance_mask.loc[dt]):
+            continue
+
+        signal_period_end = signal_period_end_by_date.get(dt, pd.NaT)
+        meta = {
+            "signal_period_end": pd.Timestamp(signal_period_end) if pd.notna(signal_period_end) else pd.NaT,
+            "n_eligible": 0,
+            "n_pb_pool": 0,
+        }
+        if pd.isna(signal_period_end) or signal_period_end not in score_panel.index:
+            target_by_date[dt] = zero_w.copy()
+            meta_by_date[dt] = meta
+            elig_by_date[dt] = pd.Series(False, index=symbols, dtype=bool)
+            continue
+
+        elig = eligible_panel.loc[signal_period_end].astype(bool)
+        score = score_panel.loc[signal_period_end].where(elig)
+        meta["n_eligible"] = int(elig.sum())
+
+        if bool(cfg.use_pb_filter):
+            pb_row = pd.to_numeric(pb_panel.loc[signal_period_end], errors="coerce")
+            pb_valid = elig & pb_row.notna() & (pb_row > 0) & np.isfinite(pb_row)
+            if int(pb_valid.sum()) > 0:
+                thr = float(pb_row[pb_valid].quantile(float(cfg.pb_quantile)))
+                low_pb_mask = pb_valid & (pb_row <= thr)
+                meta["n_pb_pool"] = int(low_pb_mask.sum())
+                score = score.where(low_pb_mask)
+            else:
+                score = pd.Series(np.nan, index=symbols, dtype="float64")
+
+        if int(score.notna().sum()) >= int(cfg.min_score_names):
+            if bool(cfg.ffscore_full_score_only):
+                w_target = _build_equal_weight_full_score(score)
+            else:
+                w_target = _build_equal_weight_top_quantile(score, top_quantile=cfg.top_quantile)
+        else:
+            w_target = zero_w.copy()
+
+        target_by_date[dt] = w_target.astype("float64")
+        meta_by_date[dt] = meta
+        elig_by_date[dt] = elig.astype(bool)
+
+    return target_by_date, meta_by_date, elig_by_date
+
+
 def run_backtest(panel: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     months = pd.DatetimeIndex(sorted(panel["month_end"].dropna().unique()))
     symbols = pd.Index(sorted(panel["ts_code"].dropna().unique()))
@@ -336,6 +418,7 @@ def run_backtest(panel: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.DataFrame
     daily[px_col] = pd.to_numeric(daily[px_col], errors="coerce")
     daily["ret_d"] = daily.groupby("ts_code", sort=False)[px_col].pct_change()
     daily["month_end"] = _to_month_end(daily["trade_date"])
+    daily["period_end"] = daily["month_end"]
 
     ret_d = daily.pivot(index="trade_date", columns="ts_code", values="ret_d").sort_index().reindex(columns=symbols)
     if ret_d.empty:
@@ -343,190 +426,58 @@ def run_backtest(panel: pd.DataFrame, cfg: BacktestConfig) -> tuple[pd.DataFrame
     trade_dates = pd.DatetimeIndex(ret_d.index)
     rebalance_mask = _build_rebalance_mask(trade_dates, cfg.rebalance_freq)
 
-    cal = daily[["trade_date", "month_end"]].drop_duplicates("trade_date").set_index("trade_date").sort_index()
-    month_last_trade_dates = set(
-        cal.reset_index().groupby("month_end", sort=True)["trade_date"].max().tolist()
+    cal = daily[["trade_date", "period_end"]].drop_duplicates("trade_date").set_index("trade_date").sort_index()
+    signal_period_end_by_date = build_signal_period_end_by_trade_date(cal, period_col="period_end")
+    target_by_date, meta_by_date, elig_by_date = _build_ffscore_rebalance_targets(
+        score_panel=score_panel,
+        pb_panel=pb_panel,
+        eligible_panel=eligible_panel,
+        trade_dates=trade_dates,
+        rebalance_mask=rebalance_mask,
+        signal_period_end_by_date=signal_period_end_by_date,
+        symbols=symbols,
+        cfg=cfg,
     )
-
-    w_prev_close = pd.Series(0.0, index=symbols, dtype="float64")
-    w_target_last = pd.Series(0.0, index=symbols, dtype="float64")
-    latest_signal_month_end: pd.Timestamp | pd.NaT = pd.NaT
-    cost_rate = float(cfg.cost_bps) / 10000.0
-    equity = 1.0
-    daily_rows: list[dict] = []
-    rb_rows: list[dict] = []
-    w_rows: list[dict] = []
-    ret_hist: list[float] = []
-    for i, dt in enumerate(trade_dates):
-        if i > 0:
-            prev_dt = pd.Timestamp(trade_dates[i - 1])
-            if prev_dt in month_last_trade_dates:
-                latest_signal_month_end = pd.Timestamp(cal.at[prev_dt, "month_end"])
-
-        month_end = pd.Timestamp(cal.at[dt, "month_end"])
-        signal_month_end = pd.Timestamp(latest_signal_month_end) if pd.notna(latest_signal_month_end) else pd.NaT
-        do_rb = bool(rebalance_mask.loc[dt])
-        n_pb_pool = 0
-        n_force_cash = 0
-        n_eligible = 0
-        vol_est_ann = np.nan
-        vol_scale = 1.0
-
-        if do_rb and pd.notna(signal_month_end) and signal_month_end in score_panel.index:
-            elig = eligible_panel.loc[signal_month_end].astype(bool)
-            score = score_panel.loc[signal_month_end].where(elig)
-            n_eligible = int(elig.sum())
-
-            if bool(cfg.use_pb_filter):
-                pb_row = pd.to_numeric(pb_panel.loc[signal_month_end], errors="coerce")
-                pb_valid = elig & pb_row.notna() & (pb_row > 0) & np.isfinite(pb_row)
-                if int(pb_valid.sum()) > 0:
-                    thr = float(pb_row[pb_valid].quantile(float(cfg.pb_quantile)))
-                    low_pb_mask = pb_valid & (pb_row <= thr)
-                    n_pb_pool = int(low_pb_mask.sum())
-                    score = score.where(low_pb_mask)
-                else:
-                    score = pd.Series(np.nan, index=symbols, dtype="float64")
-
-            held = w_prev_close.abs() > 0
-            force_cash = held & (~elig)
-            n_force_cash = int(force_cash.sum())
-            if n_force_cash > 0:
-                w_prev_close.loc[force_cash] = 0.0
-
-            if int(score.notna().sum()) >= int(cfg.min_score_names):
-                if bool(cfg.ffscore_full_score_only):
-                    w_target = _build_equal_weight_full_score(score)
-                else:
-                    w_target = _build_equal_weight_top_quantile(score, top_quantile=cfg.top_quantile)
-            else:
-                w_target = pd.Series(0.0, index=symbols, dtype="float64")
-
-            if float(cfg.vol_target_ann) > 0 and float(w_target.sum()) > 0:
-                lb_days = max(20, int(cfg.vol_lookback_m) * 21)
-                hist = np.asarray(ret_hist[-lb_days:], dtype="float64")
-                if hist.size >= 20:
-                    vol_d = float(np.nanstd(hist, ddof=1))
-                    vol_est_ann = float(vol_d * np.sqrt(252.0)) if np.isfinite(vol_d) else np.nan
-                    if np.isfinite(vol_est_ann) and vol_est_ann > 0:
-                        vol_scale = float(cfg.vol_target_ann) / vol_est_ann
-                if not np.isfinite(vol_scale) or vol_scale <= 0:
-                    vol_scale = 1.0
-                vol_scale = float(min(vol_scale, float(cfg.max_leverage)))
-                w_target = w_target * vol_scale
-
-            w_target_last = w_target.astype("float64")
-
-        elif do_rb:
-            w_target_last = pd.Series(0.0, index=symbols, dtype="float64")
-
-        if do_rb:
-            cash_before = 1.0 - float(w_prev_close.sum())
-            cash_target = 1.0 - float(w_target_last.sum())
-            turnover = 0.5 * (float((w_target_last - w_prev_close).abs().sum()) + abs(cash_target - cash_before))
-            cost = turnover * cost_rate
-            w_exec = w_target_last.copy()
-            rb_rows.append(
-                {
-                    "trade_date": pd.Timestamp(dt),
-                    "month_end": month_end,
-                    "signal_month_end": signal_month_end,
-                    "turnover": float(turnover),
-                    "cost": float(cost),
-                    "n_holdings": int((w_target_last > 0).sum()),
-                    "n_eligible": int(n_eligible),
-                    "n_pb_pool": int(n_pb_pool),
-                    "n_force_cash": int(n_force_cash),
-                    "leverage": float(w_target_last.sum()),
-                    "vol_est_ann": float(vol_est_ann),
-                    "vol_scale": float(vol_scale),
-                }
-            )
-        else:
-            turnover = 0.0
-            cost = 0.0
-            w_exec = w_prev_close.copy()
-
-        r = ret_d.loc[dt].fillna(0.0).astype("float64")
-        gross = float((w_exec * r).sum())
-        net = float(gross - cost)
-        equity = float(equity * (1.0 + net))
-        ret_hist.append(float(net))
-
-        value_after = 1.0 + gross
-        if value_after > 0 and np.isfinite(value_after):
-            w_prev_close = (w_exec * (1.0 + r)) / value_after
-        else:
-            w_prev_close = pd.Series(0.0, index=symbols, dtype="float64")
-
-        daily_rows.append(
-            {
-                "trade_date": pd.Timestamp(dt),
-                "month_end": month_end,
-                "signal_month_end": signal_month_end,
-                "rebalance": bool(do_rb),
-                "gross_ret": float(gross),
-                "net_ret": float(net),
-                "turnover": float(turnover),
-                "cost": float(cost),
-                "equity": float(equity),
-                "leverage": float(w_exec.sum()),
-            }
-        )
-        w_rows.append({"trade_date": pd.Timestamp(dt), **{s: float(v) for s, v in w_exec.items()}})
-
-    rebalance_info = pd.DataFrame(rb_rows).sort_values("trade_date").reset_index(drop=True)
-    daily_bt = pd.DataFrame(daily_rows).sort_values("trade_date").reset_index(drop=True)
-    w_daily = pd.DataFrame(w_rows).set_index("trade_date").sort_index() if w_rows else pd.DataFrame()
-    return rebalance_info, daily_bt, w_daily
-
-
-def performance_stats(ret: pd.Series, periods_per_year: int = 12) -> dict[str, float]:
-    r = pd.to_numeric(ret, errors="coerce").fillna(0.0).astype("float64")
-    n = len(r)
-    if n == 0:
-        return {"annualized_return": np.nan, "annualized_vol": np.nan, "sharpe": np.nan, "total_return": np.nan}
-    eq = (1.0 + r).cumprod()
-    years = n / float(periods_per_year)
-    ann_ret = float(eq.iloc[-1] ** (1.0 / years) - 1.0) if years > 0 else np.nan
-    ann_vol = float(r.std(ddof=1) * np.sqrt(periods_per_year)) if n > 1 else np.nan
-    sharpe = float((r.mean() / r.std(ddof=1)) * np.sqrt(periods_per_year)) if n > 1 and r.std(ddof=1) != 0 else np.nan
-    dd = (eq / eq.cummax() - 1.0).astype("float64")
-    max_dd = float(dd.min()) if len(dd) else np.nan
-    return {
-        "annualized_return": ann_ret,
-        "annualized_vol": ann_vol,
-        "sharpe": sharpe,
-        "total_return": float(eq.iloc[-1] - 1.0),
-        "max_drawdown": max_dd,
-    }
-
+    return run_weight_execution_engine(
+        ret_d=ret_d,
+        cal=cal,
+        symbols=symbols,
+        rebalance_mask=rebalance_mask,
+        target_by_date=target_by_date,
+        meta_by_date=meta_by_date,
+        elig_by_date=elig_by_date,
+        cost_bps=float(cfg.cost_bps),
+        vol_target_ann=float(cfg.vol_target_ann),
+        vol_lookback_m=int(cfg.vol_lookback_m),
+        max_leverage=float(cfg.max_leverage),
+        period_col="period_end",
+    )
 
 def build_strategy_monthly_realized_vol(daily_bt: pd.DataFrame) -> pd.DataFrame:
     if daily_bt.empty:
-        return pd.DataFrame(columns=["month_end", "realized_vol_ann", "month_ret"])
+        return pd.DataFrame(columns=["period_end", "realized_vol_ann", "month_ret"])
     rows: list[dict] = []
-    for m_end, g in daily_bt.groupby("month_end", sort=True):
+    for p_end, g in daily_bt.groupby("period_end", sort=True):
         r = pd.to_numeric(g["net_ret"], errors="coerce").fillna(0.0).astype("float64")
         month_ret = float((1.0 + r).prod() - 1.0)
         realized_vol_ann = float(r.std(ddof=1) * np.sqrt(252.0)) if len(r) > 1 else np.nan
         rows.append(
             {
-                "month_end": pd.Timestamp(m_end),
+                "period_end": pd.Timestamp(p_end),
                 "realized_vol_ann": realized_vol_ann,
                 "month_ret": month_ret,
                 "n_days": int(len(r)),
             }
         )
-    return pd.DataFrame(rows).sort_values("month_end")
+    return pd.DataFrame(rows).sort_values("period_end")
 
 
 def build_strategy_vol_lag_corr(strategy_monthly_vol: pd.DataFrame, max_lag: int) -> pd.DataFrame:
     if strategy_monthly_vol.empty:
         return pd.DataFrame(columns=["lag_month", "corr", "n_pairs"])
     s = (
-        strategy_monthly_vol.sort_values("month_end")
-        .set_index("month_end")["realized_vol_ann"]
+        strategy_monthly_vol.sort_values("period_end")
+        .set_index("period_end")["realized_vol_ann"]
         .astype("float64")
     )
     rows: list[dict] = []
@@ -578,7 +529,7 @@ def save_plots(
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(12, 4.5))
-    ax.plot(strategy_monthly_realized_vol["month_end"], strategy_monthly_realized_vol["realized_vol_ann"], lw=1.4, color="tab:green")
+    ax.plot(strategy_monthly_realized_vol["period_end"], strategy_monthly_realized_vol["realized_vol_ann"], lw=1.4, color="tab:green")
     ax.set_title("Strategy Monthly Realized Vol (from Daily Net Returns)")
     ax.set_xlabel("Date")
     ax.set_ylabel("Annualized Vol")
