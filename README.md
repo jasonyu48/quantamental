@@ -53,11 +53,12 @@ Volatility targeting uses realized volatility estimated from daily strategy net 
 
 Main backtest outputs are in `reports/ffscore_backtest_final/`.
 
-From `performance_summary.csv`:
+From `performance_summary.csv` and `rank_ic_summary.csv`:
 
 - Annualized return: **29.97%**
 - Annualized volatility: **26.97%**
 - Sharpe: **1.11**
+- Rank IC: **0.0256**
 - Total return: **2624.17%**
 - Max drawdown: **-46.35%**
 

@@ -505,6 +505,78 @@ def build_strategy_vol_lag_corr(strategy_monthly_vol: pd.DataFrame, max_lag: int
     return pd.DataFrame(rows)
 
 
+def build_rank_ic_timeseries(panel: pd.DataFrame) -> pd.DataFrame:
+    if panel.empty:
+        return pd.DataFrame(columns=["month_end", "rank_ic", "n_names"])
+    rows: list[dict] = []
+    for month_end, g in panel.groupby("month_end", sort=True):
+        x = pd.to_numeric(g["ffscore_used"], errors="coerce")
+        y = pd.to_numeric(g["next_ret_1m"], errors="coerce")
+        m = g["eligible"].astype(bool) & x.notna() & y.notna()
+        n_names = int(m.sum())
+        if n_names > 2:
+            xv = x[m].astype("float64")
+            yv = y[m].astype("float64")
+            if float(xv.std(ddof=1)) == 0.0 or float(yv.std(ddof=1)) == 0.0:
+                rank_ic = np.nan
+            else:
+                rank_ic = float(xv.corr(yv, method="spearman"))
+        else:
+            rank_ic = np.nan
+        rows.append(
+            {
+                "month_end": pd.Timestamp(month_end),
+                "rank_ic": rank_ic,
+                "n_names": n_names,
+            }
+        )
+    return pd.DataFrame(rows).sort_values("month_end").reset_index(drop=True)
+
+
+def summarize_rank_ic(rank_ic_ts: pd.DataFrame) -> pd.DataFrame:
+    if rank_ic_ts.empty:
+        return pd.DataFrame(
+            [
+                {
+                    "n_months": 0,
+                    "mean_rank_ic": np.nan,
+                    "std_rank_ic": np.nan,
+                    "rank_ic_ir": np.nan,
+                    "positive_ratio": np.nan,
+                }
+            ]
+        )
+    s = pd.to_numeric(rank_ic_ts["rank_ic"], errors="coerce").dropna().astype("float64")
+    n_months = int(len(s))
+    if n_months == 0:
+        return pd.DataFrame(
+            [
+                {
+                    "n_months": 0,
+                    "mean_rank_ic": np.nan,
+                    "std_rank_ic": np.nan,
+                    "rank_ic_ir": np.nan,
+                    "positive_ratio": np.nan,
+                }
+            ]
+        )
+    mean_ic = float(s.mean())
+    std_ic = float(s.std(ddof=1)) if n_months > 1 else np.nan
+    rank_ic_ir = float(mean_ic / std_ic) if np.isfinite(std_ic) and std_ic > 0 else np.nan
+    positive_ratio = float((s > 0).mean())
+    return pd.DataFrame(
+        [
+            {
+                "n_months": n_months,
+                "mean_rank_ic": mean_ic,
+                "std_rank_ic": std_ic,
+                "rank_ic_ir": rank_ic_ir,
+                "positive_ratio": positive_ratio,
+            }
+        ]
+    )
+
+
 def save_plots(
     daily_bt: pd.DataFrame,
     strategy_monthly_realized_vol: pd.DataFrame,
@@ -630,6 +702,8 @@ def main(argv: list[str] | None = None) -> int:
     stats = performance_stats(daily_bt["net_ret"], periods_per_year=252)
     strategy_monthly_realized_vol = build_strategy_monthly_realized_vol(daily_bt)
     strategy_vol_lag_corr = build_strategy_vol_lag_corr(strategy_monthly_realized_vol, cfg.max_vol_lag)
+    rank_ic_ts = build_rank_ic_timeseries(panel)
+    rank_ic_summary = summarize_rank_ic(rank_ic_ts)
     save_plots(daily_bt, strategy_monthly_realized_vol, strategy_vol_lag_corr, cfg.out_dir)
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -640,6 +714,8 @@ def main(argv: list[str] | None = None) -> int:
     rebalance_info.to_parquet(cfg.out_dir / "rebalance_info.parquet", index=False)
     strategy_monthly_realized_vol.to_csv(cfg.out_dir / "strategy_monthly_realized_vol.csv", index=False)
     strategy_vol_lag_corr.to_csv(cfg.out_dir / "strategy_vol_lag_correlation.csv", index=False)
+    rank_ic_ts.to_csv(cfg.out_dir / "rank_ic_timeseries.csv", index=False)
+    rank_ic_summary.to_csv(cfg.out_dir / "rank_ic_summary.csv", index=False)
     pd.DataFrame([stats]).to_csv(cfg.out_dir / "performance_summary.csv", index=False)
 
     print(f"[done] outputs saved to: {cfg.out_dir}")
@@ -648,6 +724,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[perf] sharpe={stats['sharpe']:.3f}")
     print(f"[perf] max_drawdown={stats['max_drawdown']:.4%}")
     print(f"[perf] total_return={stats['total_return']:.4%}")
+    print(f"[ic] mean_rank_ic={rank_ic_summary.loc[0, 'mean_rank_ic']:.6f}")
+    print(f"[ic] rank_ic_ir={rank_ic_summary.loc[0, 'rank_ic_ir']:.6f}")
     return 0
 
 
