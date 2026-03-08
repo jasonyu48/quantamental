@@ -54,7 +54,7 @@ Volatility targeting uses realized volatility estimated from daily strategy net 
 
 Main backtest outputs are in `reports/ffscore_backtest_final/`.
 
-From `performance_summary.csv` and `rank_ic_summary.csv`:
+From `performance_summary.csv` and `rank_ic_summary.csv` (calculated based on the whole universe, regardless of PB filter):
 
 - Annualized return: **29.96%**
 - Annualized volatility: **26.97%**
