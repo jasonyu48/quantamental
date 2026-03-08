@@ -266,8 +266,9 @@ def build_monthly_panel(cfg: BacktestConfig) -> pd.DataFrame:
         .astype("float64")
     )
 
-    # tradability and executable-return availability are still mandatory.
-    required = ["close_m", "next_ret_1m", "ffscore_used"]
+    # tradability and signal availability are mandatory for trading.
+    # Keep next_ret_1m out of tradable eligibility to avoid look-ahead bias.
+    required = ["close_m", "ffscore_used"]
     panel["has_required_data"] = panel[required].notna().all(axis=1)
     panel["tradable_flag"] = panel["tradable_days"] >= int(cfg.min_tradable_days)
     panel["eligible"] = panel["tradable_flag"] & panel["has_required_data"]
@@ -577,6 +578,46 @@ def summarize_rank_ic(rank_ic_ts: pd.DataFrame) -> pd.DataFrame:
     )
 
 
+def summarize_force_cash(rebalance_info: pd.DataFrame) -> pd.DataFrame:
+    if rebalance_info.empty or ("n_force_cash" not in rebalance_info.columns):
+        return pd.DataFrame(
+            [
+                {
+                    "n_rebalances": 0,
+                    "total_held_before_rebalance": 0,
+                    "total_force_cash_names": 0,
+                    "force_cash_ratio_vs_held_total": np.nan,
+                    "avg_force_cash_ratio_vs_held_per_rebalance": np.nan,
+                }
+            ]
+        )
+    n_force_cash = pd.to_numeric(rebalance_info["n_force_cash"], errors="coerce").fillna(0.0)
+    n_held_before = pd.to_numeric(
+        rebalance_info.get("n_held_before_rebalance", pd.Series(dtype="float64")),
+        errors="coerce",
+    ).fillna(0.0)
+    n_rebalances = int(len(rebalance_info))
+    total_force = float(n_force_cash.sum())
+    total_held_before = float(n_held_before.sum())
+    per_rb_ratio = np.where(n_held_before > 0.0, n_force_cash / n_held_before, np.nan)
+    valid_ratio = per_rb_ratio[np.isfinite(per_rb_ratio)]
+    return pd.DataFrame(
+        [
+            {
+                "n_rebalances": n_rebalances,
+                "total_held_before_rebalance": int(total_held_before),
+                "total_force_cash_names": int(total_force),
+                "force_cash_ratio_vs_held_total": (
+                    float(total_force / total_held_before) if total_held_before > 0 else np.nan
+                ),
+                "avg_force_cash_ratio_vs_held_per_rebalance": (
+                    float(valid_ratio.mean()) if valid_ratio.size > 0 else np.nan
+                ),
+            }
+        ]
+    )
+
+
 def save_plots(
     daily_bt: pd.DataFrame,
     strategy_monthly_realized_vol: pd.DataFrame,
@@ -704,6 +745,7 @@ def main(argv: list[str] | None = None) -> int:
     strategy_vol_lag_corr = build_strategy_vol_lag_corr(strategy_monthly_realized_vol, cfg.max_vol_lag)
     rank_ic_ts = build_rank_ic_timeseries(panel)
     rank_ic_summary = summarize_rank_ic(rank_ic_ts)
+    force_cash_summary = summarize_force_cash(rebalance_info)
     save_plots(daily_bt, strategy_monthly_realized_vol, strategy_vol_lag_corr, cfg.out_dir)
 
     cfg.out_dir.mkdir(parents=True, exist_ok=True)
@@ -716,6 +758,7 @@ def main(argv: list[str] | None = None) -> int:
     strategy_vol_lag_corr.to_csv(cfg.out_dir / "strategy_vol_lag_correlation.csv", index=False)
     rank_ic_ts.to_csv(cfg.out_dir / "rank_ic_timeseries.csv", index=False)
     rank_ic_summary.to_csv(cfg.out_dir / "rank_ic_summary.csv", index=False)
+    force_cash_summary.to_csv(cfg.out_dir / "force_cash_summary.csv", index=False)
     pd.DataFrame([stats]).to_csv(cfg.out_dir / "performance_summary.csv", index=False)
 
     print(f"[done] outputs saved to: {cfg.out_dir}")
@@ -726,6 +769,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"[perf] total_return={stats['total_return']:.4%}")
     print(f"[ic] mean_rank_ic={rank_ic_summary.loc[0, 'mean_rank_ic']:.6f}")
     print(f"[ic] rank_ic_ir={rank_ic_summary.loc[0, 'rank_ic_ir']:.6f}")
+    print(f"[liq] force_cash_ratio_vs_held_total={force_cash_summary.loc[0, 'force_cash_ratio_vs_held_total']:.4%}")
     return 0
 
 

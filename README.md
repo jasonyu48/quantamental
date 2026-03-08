@@ -31,11 +31,12 @@ The score ranges from 0 to 5.
 
 ### Portfolio and execution assumptions
 
-- Long-only equity portfolio plus cash.
+- The stock universe is the A share stocks whose OHLCV and fundamental data can be found from TuShare.
+- Long-only.
 - Default selection in this repo:
   - low-PB filter enabled (`pb_quantile = 0.2`)
   - full-score-only enabled (buy names with `FFScore >= 5`)
-- Tradability guard: names with monthly tradable days below threshold are excluded.
+- Stocks with monthly tradable days below threshold are removed from portfolio in the next month (`force_cash`).
 - Signal timing: signal is formed after month-end close; trading happens on the next trading day.
 - Rebalance frequency default: monthly.
 - Transaction cost: one-way cost in bps (`cost-bps = 10`) applied through turnover.
@@ -55,11 +56,11 @@ Main backtest outputs are in `reports/ffscore_backtest_final/`.
 
 From `performance_summary.csv` and `rank_ic_summary.csv`:
 
-- Annualized return: **29.97%**
+- Annualized return: **29.96%**
 - Annualized volatility: **26.97%**
 - Sharpe: **1.11**
 - Rank IC: **0.0256**
-- Total return: **2624.17%**
+- Total return: **2621.89%**
 - Max drawdown: **-46.35%**
 
 These results suggest the FFScore + low-PB + full-score framework has strong long-run return, but still experiences deep drawdowns.

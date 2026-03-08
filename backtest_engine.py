@@ -36,11 +36,14 @@ def run_weight_execution_engine(
         signal_period_end = pd.NaT
         n_pb_pool = 0
         n_force_cash = 0
+        n_held_before_rebalance = 0
         n_eligible = 0
         vol_est_ann = np.nan
         vol_scale = 1.0
 
         if do_rb:
+            held = w_prev_close.abs() > 0
+            n_held_before_rebalance = int(held.sum())
             meta = meta_by_date.get(dt, {})
             signal_period_end = meta.get("signal_period_end", pd.NaT)
             n_eligible = int(meta.get("n_eligible", 0))
@@ -48,7 +51,6 @@ def run_weight_execution_engine(
 
             elig = elig_by_date.get(dt)
             if elig is not None:
-                held = w_prev_close.abs() > 0
                 force_cash = held & (~elig.astype(bool))
                 n_force_cash = int(force_cash.sum())
                 if n_force_cash > 0:
@@ -82,9 +84,13 @@ def run_weight_execution_engine(
                     "turnover": float(turnover),
                     "cost": float(cost),
                     "n_holdings": int((w_target_last > 0).sum()),
+                    "n_held_before_rebalance": int(n_held_before_rebalance),
                     "n_eligible": int(n_eligible),
                     "n_pb_pool": int(n_pb_pool),
                     "n_force_cash": int(n_force_cash),
+                    "force_cash_ratio_in_held": (
+                        float(n_force_cash / n_held_before_rebalance) if n_held_before_rebalance > 0 else np.nan
+                    ),
                     "leverage": float(w_target_last.sum()),
                     "vol_est_ann": float(vol_est_ann),
                     "vol_scale": float(vol_scale),
